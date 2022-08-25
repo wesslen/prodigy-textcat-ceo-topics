@@ -1,0 +1,147 @@
+title: "Textcat model of CEO Letters topics"
+description: "This project creates a textcat model on American CEO Letters to Shareholders to identify topics (e.g., Technology)"
+# Variables can be referenced across the project.yml using ${vars.var_name}
+vars:
+  config: "config.cfg"
+  name: "textcat_topics"
+  version: "0.0.0"
+  language: "en"
+  # Change this variable if you want to use the GPU (gpu_id: 0)
+  gpu_id: -1
+
+  files:
+    data_file: "ceo-letters-sample.jsonl"
+    annotated_file: "ceo_tech_dataset.jsonl"
+    patterns: "patterns.jsonl"
+
+  prodigy:
+    dataset_manual: "ceo_manual"
+    dataset_teach: "ceo_teach"
+    total_dataset: "ceo_dataset"
+    train_dataset: "ceo_textcat_training"
+    eval_dataset: "ceo_textcat_eval"
+
+
+# These are the directories that the project needs. The project CLI will make
+# sure that they always exist.
+directories: ["assets", "training", "configs", "corpus", "packages"]
+
+# Assets that should be downloaded or available in the directory. We're shipping
+# them with the project, so they won't have to be downloaded. But the
+# 'project assets' command still lets you verify that the checksums match.
+assets:
+- dest: "assets/${vars.files.data_file}"
+  description: "Sample of sentences from CEO Letters"
+- dest: "assets/${vars.files.patterns}"
+  description: "Pattern file of topics"
+- dest: "assets/${vars.files.annotated_file}"
+  description: "JSONL-formatted development data exported from Prodigy, annotated with `TECHNOLOGY` labels (300 examples)"
+#  - dest: "assets/${vars.files.train_file}.jsonl"
+#    checksum: "63373dd656daa1fd3043ce166a59474c"
+#    description: "JSONL-formatted training data exported from Prodigy, annotated with `FASHION_BRAND` entities (1235 examples)"
+#  - dest: "assets/${vars.files.eval_file}.jsonl"
+#    checksum: "5113dc04e03f079525edd8df3f4f39e3"
+#    description: "JSONL-formatted development data exported from Prodigy, annotated with `FASHION_BRAND` entities (500 examples)"
+
+# Workflows are sequences of commands (see below) executed in order. You can
+# run them via "spacy project run [workflow]". If a commands's inputs/outputs
+# haven't changed, it won't be re-run.
+workflows:
+  all:
+    - data-to-spacy
+    - train_spacy
+
+# Project commands, specified in a style similar to CI config files (e.g. Azure
+# pipelines). The name is the command name that lets you trigger the command
+# via "spacy project run [command] [path]". The help message is optional and
+# shown when executing "spacy project run [optional command] [path] --help".
+commands:
+  - name: "db-in"
+    help: "One time to create spaCy config for modeling"
+    script: 
+      - "python -m prodigy db-in ${vars.prodigy.total_dataset} assets/${vars.files.annotated_file}"
+
+  - name: "create-config"
+    help: "One time to create spaCy config for modeling"
+    script: 
+      - "python -m spacy init config configs/${vars.config} --lang ${vars.language} --pipeline tok2vec,lemmatizer,textcat_multilabel"
+
+  - name: "textcat_manual"
+    help: "Textcat manual in a text by highlighting them and selecting the respective labels."
+    script:
+      - "prodigy textcat.manual ${vars.prodigy.dataset_manual} assets/${vars.files.data_file} --label TECHNOLOGY"
+    deps:
+      - "assets/${vars.files.data_file}"
+
+  - name: "textcat_teach_patterns"
+    help: "Textcat teach (active learning) in a text with patterns."
+    script:
+      - "python -m prodigy textcat.teach ${vars.prodigy.dataset_teach} training/model-best assets/${vars.files.data_file} --label TECHNOLOGY --patterns assets/${vars.files.patterns}"
+    deps:
+      - "assets/${vars.files.data_file}"
+      - "assets/${vars.files.patterns}"
+
+  - name: "partition"
+    help: "Partition datasets"
+
+  - name: "data-to-spacy"
+    help: "Merge your annotations and create data in spaCy's binary format"
+    script:
+      - "python -m prodigy data-to-spacy corpus/ --textcat_multilabel ${vars.prodigy.train_dataset},eval:${vars.prodigy.eval_dataset}"
+    outputs:
+      - "corpus/train.spacy"
+      - "corpus/dev.spacy"
+
+  - name: "train_prodigy"
+    help: "Train a spancat model with prodigy"
+    script:
+      - "python -m prodigy train training/ --textcat-multilabel ${vars.prodigy.total_dataset} --gpu-id ${vars.gpu_id}"
+    deps:
+      - "corpus/train.spacy"
+      - "corpus/dev.spacy"
+    outputs:
+      - "training/model-best"
+
+  - name: "train_spacy"
+    help: "Train a spancat model with spaCy"
+    script:
+      - "python -m spacy train configs/${vars.config} --output training/ --paths.train corpus/train.spacy --paths.dev corpus/dev.spacy --gpu-id ${vars.gpu_id}"
+    deps:
+      - "corpus/train.spacy"
+      - "corpus/dev.spacy"
+    outputs:
+      - "training/model-best"
+
+  - name: "train_curve"
+    help: "Train the model with Prodigy by using different portions of training examples to evaluate if more annotations can potentially improve the performance"
+    script:
+      - "python -m prodigy train-curve --textcat_multilabel ${vars.prodigy.train_dataset},eval:${vars.prodigy.eval_dataset} --config configs/${vars.config} --gpu-id ${vars.gpu_id} --show-plot"
+
+  - name: package
+    help: "Package the trained model so it can be installed"
+    script:
+      - "python -m spacy package training/model-best packages --name ${vars.name} --version ${vars.version} --force"
+    deps:
+      - "training/model-best"
+    outputs_no_cache:
+      - "packages/en_${vars.name}-${vars.version}/dist/en_${vars.name}-${vars.version}.tar.gz"
+
+  - name: visualize-model
+    help: Visualize the model's output interactively using Streamlit
+    script:
+      - "streamlit run scripts/visualize_model.py training/model-best"
+    deps:
+      - "scripts/visualize_model.py"
+      - "training/model-best"
+
+  - name: clean
+    help: "Remove intermediate files"
+    script:
+      - "rm -rf training"
+      - "rm -rf corpus"
+      - "rm -rf packages"
+
+  - name: document
+    help: "Export README for project details"
+    script:
+      - "spacy project document --output README.md"
