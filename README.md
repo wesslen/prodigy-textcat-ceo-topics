@@ -18,7 +18,7 @@ Commands are only re-run if their inputs have changed.
 
 | Command | Description |
 | --- | --- |
-| `db-in` | One time to create spaCy config for modeling |
+| `db-in` | Load 300 annotations from flat file into Prodigy database |
 | `create-config` | One time to create spaCy config for modeling |
 | `textcat-manual` | Textcat manual in a text by highlighting them and selecting the respective labels. |
 | `textcat-teach` | Textcat teach (active learning) in a text. |

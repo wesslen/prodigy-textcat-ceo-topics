@@ -62,7 +62,7 @@ workflows:
 # shown when executing "spacy project run [optional command] [path] --help".
 commands:
   - name: "db-in"
-    help: "One time to create spaCy config for modeling"
+    help: "Load 300 annotations from flat file into Prodigy database"
     script: 
       - "python -m prodigy db-in ${vars.prodigy.total_dataset} assets/${vars.files.annotated_file}"
 
