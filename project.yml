@@ -18,22 +18,19 @@ vars:
     dataset_manual: "ceo_manual"
     dataset_teach: "ceo_teach"
     total_dataset: "ceo_dataset"
-    train_dataset: "ceo_textcat_training"
-    eval_dataset: "ceo_textcat_eval"
+    combined_dataset: "ceo_combined"
 
 
 # These are the directories that the project needs. The project CLI will make
 # sure that they always exist.
-directories: ["assets", "training", "configs", "corpus", "packages"]
+directories: ["assets", "training", "configs", "corpus", "packages", "scripts"]
 
 # Assets that should be downloaded or available in the directory. We're shipping
 # them with the project, so they won't have to be downloaded. But the
 # 'project assets' command still lets you verify that the checksums match.
 assets:
 - dest: "assets/${vars.files.data_file}"
-  description: "Sample of sentences from CEO Letters"
-- dest: "assets/${vars.files.patterns}"
-  description: "Pattern file of topics"
+  description: "Sample of sentences from CEO Letters for Five Companies"
 - dest: "assets/${vars.files.annotated_file}"
   description: "JSONL-formatted development data exported from Prodigy, annotated with `TECHNOLOGY` labels (300 examples)"
 #  - dest: "assets/${vars.files.train_file}.jsonl"
@@ -47,9 +44,17 @@ assets:
 # run them via "spacy project run [workflow]". If a commands's inputs/outputs
 # haven't changed, it won't be re-run.
 workflows:
-  all:
+  initial-train:
+    - db-in
     - data-to-spacy
-    - train_spacy
+    - train-spacy
+  teach-train:
+    - merge
+    - data-to-spacy-teach
+    - train-spacy
+  diagnose:
+    - train-curve
+    - evaluate
 
 # Project commands, specified in a style similar to CI config files (e.g. Azure
 # pipelines). The name is the command name that lets you trigger the command
@@ -64,46 +69,52 @@ commands:
   - name: "create-config"
     help: "One time to create spaCy config for modeling"
     script: 
-      - "python -m spacy init config configs/${vars.config} --lang ${vars.language} --pipeline tok2vec,lemmatizer,textcat_multilabel"
+      - "python -m spacy init config configs/${vars.config} --lang ${vars.language} --pipeline tok2vec,textcat_multilabel"
 
-  - name: "textcat_manual"
+  - name: "textcat-manual"
     help: "Textcat manual in a text by highlighting them and selecting the respective labels."
     script:
       - "prodigy textcat.manual ${vars.prodigy.dataset_manual} assets/${vars.files.data_file} --label TECHNOLOGY"
     deps:
       - "assets/${vars.files.data_file}"
 
-  - name: "textcat_teach_patterns"
-    help: "Textcat teach (active learning) in a text with patterns."
+  - name: "textcat-teach"
+    help: "Textcat teach (active learning) in a text."
     script:
-      - "python -m prodigy textcat.teach ${vars.prodigy.dataset_teach} training/model-best assets/${vars.files.data_file} --label TECHNOLOGY --patterns assets/${vars.files.patterns}"
+      - "python -m prodigy textcat.teach ${vars.prodigy.dataset_teach} training/model-best assets/${vars.files.data_file} --label TECHNOLOGY --exclude ${vars.prodigy.total_dataset}"
     deps:
       - "assets/${vars.files.data_file}"
-      - "assets/${vars.files.patterns}"
 
-  - name: "partition"
-    help: "Partition datasets"
+  - name: "merge"
+    help: "Merge textcat teach with existing annotations"
+    script:
+      - "python -m prodigy db-merge ${vars.prodigy.total_dataset},${vars.prodigy.dataset_teach} ${vars.prodigy.combined_dataset}"
 
   - name: "data-to-spacy"
     help: "Merge your annotations and create data in spaCy's binary format"
     script:
-      - "python -m prodigy data-to-spacy corpus/ --textcat_multilabel ${vars.prodigy.train_dataset},eval:${vars.prodigy.eval_dataset}"
+      - "python -m prodigy data-to-spacy corpus/ --textcat-multilabel ${vars.prodigy.total_dataset} --config configs/${vars.config}"
     outputs:
       - "corpus/train.spacy"
       - "corpus/dev.spacy"
 
-  - name: "train_prodigy"
-    help: "Train a spancat model with prodigy"
+  - name: "data-to-spacy-teach"
+    help: "Merge your annotations and create data in spaCy's binary format"
     script:
-      - "python -m prodigy train training/ --textcat-multilabel ${vars.prodigy.total_dataset} --gpu-id ${vars.gpu_id}"
-    deps:
+      - "python -m prodigy data-to-spacy corpus/ --textcat-multilabel ${vars.prodigy.combined_dataset} --config configs/${vars.config}"
+    outputs:
       - "corpus/train.spacy"
       - "corpus/dev.spacy"
+
+  - name: "train-prodigy"
+    help: "Train a textcat model with prodigy"
+    script:
+      - "python -m prodigy train training/ --textcat-multilabel ${vars.prodigy.total_dataset}"
     outputs:
       - "training/model-best"
 
-  - name: "train_spacy"
-    help: "Train a spancat model with spaCy"
+  - name: "train-spacy"
+    help: "Train a textcat model with spaCy"
     script:
       - "python -m spacy train configs/${vars.config} --output training/ --paths.train corpus/train.spacy --paths.dev corpus/dev.spacy --gpu-id ${vars.gpu_id}"
     deps:
@@ -112,10 +123,20 @@ commands:
     outputs:
       - "training/model-best"
 
-  - name: "train_curve"
+  - name: "train-curve"
     help: "Train the model with Prodigy by using different portions of training examples to evaluate if more annotations can potentially improve the performance"
     script:
-      - "python -m prodigy train-curve --textcat_multilabel ${vars.prodigy.train_dataset},eval:${vars.prodigy.eval_dataset} --config configs/${vars.config} --gpu-id ${vars.gpu_id} --show-plot"
+      - "python -m prodigy train-curve --textcat-multilabel ${vars.prodigy.combined_dataset} --gpu-id ${vars.gpu_id} --show-plot"
+
+  - name: "evaluate"
+    help: "Evaluate the model and export metrics"
+    script:
+      - "python -m spacy evaluate training/model-best corpus/dev.spacy --output training/metrics.json"
+    deps:
+      - "corpus/dev.spacy"
+      - "training/model-best"
+    outputs:
+      - "training/metrics.json"
 
   - name: package
     help: "Package the trained model so it can be installed"
@@ -140,6 +161,13 @@ commands:
       - "rm -rf training"
       - "rm -rf corpus"
       - "rm -rf packages"
+
+  - name: clean-prodigy
+    help: "Clean Prodigy datasets"
+    script:
+      - "python -m prodigy drop ceo_teach"
+      - "python -m prodigy drop ceo_dataset"
+      - "python -m prodigy drop ceo_combined"
 
   - name: document
     help: "Export README for project details"

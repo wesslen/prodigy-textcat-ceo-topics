@@ -1,2 +1,3 @@
 jupyterlab==3.4.5
 spacy-streamlit==1.0.4
+plotext==4.2.0
