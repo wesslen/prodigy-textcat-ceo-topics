@@ -10,7 +10,7 @@
   "validate": true,
   "auto_exclude_current": true,
   "instant_submit": false,
-  "feed_overlap": false,
+  "feed_overlap": true,
   "auto_count_stream": false,
   "total_examples_target": 0,
   "ui_lang": "en",
